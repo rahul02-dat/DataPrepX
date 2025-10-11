@@ -1,0 +1,22 @@
+preprocessing:
+  missing_strategy: 'auto'
+  missing_threshold: 0.5
+  outlier_method: 'iqr'
+  cap_outliers: true
+  onehot_threshold: 10
+  scale_features: true
+  scaler: 'standard'
+  feature_engineering: true
+
+estimation:
+  test_size: 0.2
+  random_state: 42
+  cv_folds: 5
+  enable_hyperparameter_tuning: false
+
+report:
+  include_charts: true
+  chart_style: 'whitegrid'
+  dpi: 300
+  include_statistics: true
+  include_model_details: true
