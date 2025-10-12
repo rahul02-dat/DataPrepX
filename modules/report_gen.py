@@ -264,12 +264,21 @@ class ReportGenerator:
         
         story.append(PageBreak())
         story.append(Paragraph("6. Conclusion", heading_style))
-        conclusion = f"""
-        The DataPrepX pipeline successfully processed the dataset, applying comprehensive
-        preprocessing, feature engineering, and machine learning modeling.
-        {f"The best performing model was {results['best_model']} with a score of {results['best_score']:.4f}." if results else ""}
-        All generated visualizations and detailed metrics are included in this report.
-        """
+        
+        if results:
+            conclusion = f"""
+            The DataPrepX pipeline successfully processed the dataset, applying comprehensive
+            preprocessing, feature engineering, and machine learning modeling.
+            The best performing model was {results['best_model']} with a score of {results['best_score']:.4f}.
+            All generated visualizations and detailed metrics are included in this report.
+            """
+        else:
+            conclusion = """
+            The DataPrepX pipeline successfully processed the dataset, applying comprehensive
+            preprocessing and feature engineering. All generated visualizations and detailed 
+            metrics are included in this report.
+            """
+        
         story.append(Paragraph(conclusion, styles['BodyText']))
         
         doc.build(story)
@@ -314,7 +323,7 @@ class ReportGenerator:
         
         if metadata.get('missing_values'):
             doc.add_heading('3. Missing Values Handled', 1)
-            p = doc.add_paragraph("The following columns had missing values that were imputed:")
+            doc.add_paragraph("The following columns had missing values that were imputed:")
             for col, count in list(metadata['missing_values'].items())[:10]:
                 doc.add_paragraph(f"{col}: {count} missing values", style='List Bullet')
         
@@ -358,11 +367,21 @@ class ReportGenerator:
         doc.add_page_break()
         
         doc.add_heading('6. Conclusion', 1)
-        doc.add_paragraph(
-            f"The DataPrepX pipeline successfully processed the dataset, applying comprehensive "
-            f"preprocessing, feature engineering, and machine learning modeling. "
-            f"{f'The best performing model was {results[\"best_model\"]} with a score of {results[\"best_score\"]:.4f}.' if results else ' ''} "
-            f"All generated visualizations and detailed metrics are included in this report."
-        )
+        
+        if results:
+            conclusion_text = (
+                "The DataPrepX pipeline successfully processed the dataset, applying comprehensive "
+                "preprocessing, feature engineering, and machine learning modeling. "
+                f"The best performing model was {results['best_model']} with a score of {results['best_score']:.4f}. "
+                "All generated visualizations and detailed metrics are included in this report."
+            )
+        else:
+            conclusion_text = (
+                "The DataPrepX pipeline successfully processed the dataset, applying comprehensive "
+                "preprocessing and feature engineering. All generated visualizations and detailed "
+                "metrics are included in this report."
+            )
+        
+        doc.add_paragraph(conclusion_text)
         
         doc.save(str(output_path))
