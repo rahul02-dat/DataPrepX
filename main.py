@@ -14,16 +14,19 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  python main.py --input data/loan_approval.csv --target loan_approved
-  python main.py --input data/housing.csv --target price --task regression --tune
+  python main.py  (uses defaults: data/loan_approval.csv, target=loan_approved)
+  python main.py --input data/housing_prices.csv --target price --task regression
   python main.py --input data/data.xlsx --target outcome --report-format both --explain
         """
     )
     
-    parser.add_argument('--input', '-i', required=True, type=str,
-                       help='Input data file path (CSV or XLSX)')
-    parser.add_argument('--target', '-t', required=True, type=str,
-                       help='Target column name for prediction')
+    # Made arguments optional with default values
+    parser.add_argument('--input', '-i', required=False, type=str,
+                       default='data/loan_approval.csv',
+                       help='Input data file path (CSV or XLSX). Default: data/loan_approval.csv')
+    parser.add_argument('--target', '-t', required=False, type=str,
+                       default='loan_approved',
+                       help='Target column name for prediction. Default: loan_approved')
     parser.add_argument('--task', choices=['auto', 'classification', 'regression'],
                        default='auto', help='Task type (default: auto-detect)')
     parser.add_argument('--config', '-c', type=str, default='config/default_config.yaml',
@@ -31,7 +34,7 @@ Examples:
     parser.add_argument('--output', '-o', type=str, default='output',
                        help='Output directory for reports')
     parser.add_argument('--report-format', choices=['pdf', 'docx', 'both'],
-                       default='pdf', help='Report format')
+                       default='pdf', help='Report format (default: pdf)')
     parser.add_argument('--tune', action='store_true',
                        help='Enable hyperparameter tuning')
     parser.add_argument('--explain', action='store_true',
@@ -48,6 +51,9 @@ Examples:
     
     logger.info("=" * 70)
     logger.info("DataPrepX v1.1 - Starting Pipeline")
+    logger.info(f"Input File: {args.input}")
+    logger.info(f"Target Column: {args.target}")
+    logger.info(f"Task Type: {args.task}")
     logger.info("=" * 70)
     
     try:
@@ -62,17 +68,51 @@ Examples:
         output_dir.mkdir(parents=True, exist_ok=True)
         
         logger.info(f"Step 1/5: Loading data from {args.input}")
+        
+        # Load data first
+        from modules.utils import load_data
+        import pandas as pd
+        
+        df_original = load_data(args.input)
+        
+        # Verify target column exists
+        if args.target not in df_original.columns:
+            raise ValueError(f"Target column '{args.target}' not found in dataset. Available columns: {list(df_original.columns)}")
+        
+        # Save the target column BEFORE preprocessing
+        target_column = df_original[args.target].copy()
+        
+        # Remove target from dataframe for preprocessing
+        df_features = df_original.drop(columns=[args.target])
+        
+        # Save features dataframe temporarily
+        temp_file = Path('temp_features.csv')
+        df_features.to_csv(temp_file, index=False)
+        
+        # Preprocess only the features (not the target)
         preprocessor = DataPreprocessor(config['preprocessing'])
-        df_clean, metadata = preprocessor.process(args.input)
+        df_clean, metadata = preprocessor.process(str(temp_file))
+        
+        # Remove temp file
+        temp_file.unlink()
+        
+        # Add back the original target column (unscaled)
+        df_clean[args.target] = target_column.values
+        
         logger.info(f"✓ Data preprocessed: {df_clean.shape[0]} rows, {df_clean.shape[1]} columns")
         
         logger.info(f"Step 2/5: Training ML models (Task: {args.task})")
         estimator = ModelEstimator(config['estimation'])
         results = estimator.fit_and_evaluate(df_clean, args.target, args.task)
+        
+        if results['best_model'] is None:
+            logger.error("No models were successfully trained. Check the logs above for errors.")
+            return 1
+        
         logger.info(f"✓ Best Model: {results['best_model']} (Score: {results['best_score']:.4f})")
         
         explainability_results = None
-        if args.explain:
+        if args.explain and results['best_model']:
             logger.info("Step 3/5: Generating explainability analysis")
             explainer = ExplainabilityAnalyzer(config.get('explainability', {}))
             explainability_results = explainer.analyze(
@@ -87,8 +127,10 @@ Examples:
         
         logger.info("Step 4/5: Generating reports")
         report_gen = ReportGenerator(config['report'])
+        
+        # FIXED: Pass only 5 arguments
         report_paths = report_gen.generate(
-            df_clean, metadata, results, explainability_results,
+            df_clean, metadata, results,
             output_dir, args.report_format
         )
         
@@ -103,6 +145,7 @@ Examples:
         
     except FileNotFoundError as e:
         logger.error(f"File not found: {e}")
+        logger.error("Tip: Run 'python data/generate_sample_data.py' to create sample data")
         return 1
     except ValueError as e:
         logger.error(f"Configuration error: {e}")
