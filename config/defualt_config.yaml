@@ -1,11 +1,11 @@
 preprocessing:
   missing_strategy: 'auto'
   missing_threshold: 0.5
-  outlier_method: 'iqr'
+  outlier_method: 'auto'
   cap_outliers: true
   onehot_threshold: 10
   scale_features: true
-  scaler: 'standard'
+  scaler: 'auto'
   feature_engineering: true
 
 estimation:
@@ -13,6 +13,14 @@ estimation:
   random_state: 42
   cv_folds: 5
   enable_hyperparameter_tuning: false
+  parallel_training: true
+  n_jobs: -1
+
+explainability:
+  enable_shap: true
+  enable_lime: true
+  num_samples: 100
+  num_lime_samples: 5
 
 report:
   include_charts: true
@@ -20,3 +28,5 @@ report:
   dpi: 300
   include_statistics: true
   include_model_details: true
+  include_explainability: true
+  include_preprocessing_log: true
