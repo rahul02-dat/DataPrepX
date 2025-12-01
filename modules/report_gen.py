@@ -180,12 +180,21 @@ class ReportGenerator:
         story.append(Spacer(1, 30))
         
         story.append(Paragraph("1. Executive Summary", heading_style))
-        summary_text = f"""
-        This report provides a comprehensive analysis of the dataset processed through DataPrepX.
-        The dataset contains {metadata['final_shape'][0]:,} rows and {metadata['final_shape'][1]} features
-        after preprocessing and feature engineering.
-        """
-        story.append(Paragraph(summary_text, styles['BodyText']))
+        
+        if results and 'ai_summary' in results:
+            summary_paragraphs = results['ai_summary'].split('\n\n')
+            for para in summary_paragraphs:
+                if para.strip():
+                    story.append(Paragraph(para.strip().replace('\n', '<br/>'), styles['BodyText']))
+                    story.append(Spacer(1, 6))
+        else:
+            summary_text = f"""
+            This report provides a comprehensive analysis of the dataset processed through DataPrepX.
+            The dataset contains {metadata['final_shape'][0]:,} rows and {metadata['final_shape'][1]} features
+            after preprocessing and feature engineering.
+            """
+            story.append(Paragraph(summary_text, styles['BodyText']))
+        
         story.append(Spacer(1, 20))
         
         story.append(Paragraph("2. Data Overview", heading_style))
@@ -252,13 +261,53 @@ class ReportGenerator:
             story.append(Paragraph(ml_summary, styles['BodyText']))
             story.append(Spacer(1, 20))
             
+            if results.get('models'):
+                story.append(Paragraph("5.1 Detailed Model Metrics", styles['Heading3']))
+                
+                if results['task_type'] == 'classification':
+                    metrics_data = [['Model', 'Accuracy', 'Precision', 'Recall', 'F1-Score', 'CV Mean']]
+                    for model_name, metrics in results['models'].items():
+                        metrics_data.append([
+                            model_name,
+                            f"{metrics.get('accuracy', 0):.4f}",
+                            f"{metrics.get('precision', 0):.4f}",
+                            f"{metrics.get('recall', 0):.4f}",
+                            f"{metrics.get('f1_score', 0):.4f}",
+                            f"{metrics.get('cv_mean', 0):.4f}"
+                        ])
+                else:
+                    metrics_data = [['Model', 'R² Score', 'RMSE', 'MAE', 'CV Mean']]
+                    for model_name, metrics in results['models'].items():
+                        metrics_data.append([
+                            model_name,
+                            f"{metrics.get('r2_score', 0):.4f}",
+                            f"{metrics.get('rmse', 0):.2f}",
+                            f"{metrics.get('mae', 0):.2f}",
+                            f"{metrics.get('cv_mean', 0):.4f}"
+                        ])
+                
+                metrics_table = Table(metrics_data)
+                metrics_table.setStyle(TableStyle([
+                    ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
+                    ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+                    ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+                    ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+                    ('FONTSIZE', (0, 0), (-1, 0), 10),
+                    ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
+                    ('BACKGROUND', (0, 1), (-1, -1), colors.beige),
+                    ('GRID', (0, 0), (-1, -1), 1, colors.black)
+                ]))
+                
+                story.append(metrics_table)
+                story.append(Spacer(1, 20))
+            
             if 'model_comparison' in chart_paths:
-                story.append(Paragraph("5.1 Model Performance", styles['Heading3']))
+                story.append(Paragraph("5.2 Model Performance", styles['Heading3']))
                 story.append(Image(str(chart_paths['model_comparison']), width=6*inch, height=4*inch))
                 story.append(Spacer(1, 20))
             
             if 'feature_importance' in chart_paths:
-                story.append(Paragraph("5.2 Feature Importance", styles['Heading3']))
+                story.append(Paragraph("5.3 Feature Importance", styles['Heading3']))
                 story.append(Image(str(chart_paths['feature_importance']), width=6*inch, height=5*inch))
                 story.append(Spacer(1, 20))
         
@@ -296,11 +345,18 @@ class ReportGenerator:
         doc.add_paragraph()
         
         doc.add_heading('1. Executive Summary', 1)
-        doc.add_paragraph(
-            f"This report provides a comprehensive analysis of the dataset processed through DataPrepX. "
-            f"The dataset contains {metadata['final_shape'][0]:,} rows and {metadata['final_shape'][1]} features "
-            f"after preprocessing and feature engineering."
-        )
+        
+        if results and 'ai_summary' in results:
+            summary_paragraphs = results['ai_summary'].split('\n\n')
+            for para in summary_paragraphs:
+                if para.strip():
+                    doc.add_paragraph(para.strip())
+        else:
+            doc.add_paragraph(
+                f"This report provides a comprehensive analysis of the dataset processed through DataPrepX. "
+                f"The dataset contains {metadata['final_shape'][0]:,} rows and {metadata['final_shape'][1]} features "
+                f"after preprocessing and feature engineering."
+            )
         
         doc.add_heading('2. Data Overview', 1)
         table = doc.add_table(rows=6, cols=2)
@@ -351,16 +407,60 @@ class ReportGenerator:
             doc.add_paragraph(f"Training Samples: {results['train_size']:,}")
             doc.add_paragraph(f"Test Samples: {results['test_size']:,}")
             doc.add_paragraph(f"Best Model: {results['best_model']}")
-            doc.add_paragraph(f"Best Score: {results['best_score']:.4f}")
+            doc.add_paragraph(f"Performance Score: {results['best_score']:.4f}")
             doc.add_paragraph()
             
+            if results.get('models'):
+                doc.add_heading('5.1 Detailed Model Metrics', 2)
+                
+                if results['task_type'] == 'classification':
+                    table = doc.add_table(rows=len(results['models'])+1, cols=6)
+                    table.style = 'Light Grid Accent 1'
+                    
+                    hdr_cells = table.rows[0].cells
+                    hdr_cells[0].text = 'Model'
+                    hdr_cells[1].text = 'Accuracy'
+                    hdr_cells[2].text = 'Precision'
+                    hdr_cells[3].text = 'Recall'
+                    hdr_cells[4].text = 'F1-Score'
+                    hdr_cells[5].text = 'CV Mean'
+                    
+                    for idx, (model_name, metrics) in enumerate(results['models'].items(), 1):
+                        row_cells = table.rows[idx].cells
+                        row_cells[0].text = model_name
+                        row_cells[1].text = f"{metrics.get('accuracy', 0):.4f}"
+                        row_cells[2].text = f"{metrics.get('precision', 0):.4f}"
+                        row_cells[3].text = f"{metrics.get('recall', 0):.4f}"
+                        row_cells[4].text = f"{metrics.get('f1_score', 0):.4f}"
+                        row_cells[5].text = f"{metrics.get('cv_mean', 0):.4f}"
+                else:
+                    table = doc.add_table(rows=len(results['models'])+1, cols=5)
+                    table.style = 'Light Grid Accent 1'
+                    
+                    hdr_cells = table.rows[0].cells
+                    hdr_cells[0].text = 'Model'
+                    hdr_cells[1].text = 'R² Score'
+                    hdr_cells[2].text = 'RMSE'
+                    hdr_cells[3].text = 'MAE'
+                    hdr_cells[4].text = 'CV Mean'
+                    
+                    for idx, (model_name, metrics) in enumerate(results['models'].items(), 1):
+                        row_cells = table.rows[idx].cells
+                        row_cells[0].text = model_name
+                        row_cells[1].text = f"{metrics.get('r2_score', 0):.4f}"
+                        row_cells[2].text = f"{metrics.get('rmse', 0):.2f}"
+                        row_cells[3].text = f"{metrics.get('mae', 0):.2f}"
+                        row_cells[4].text = f"{metrics.get('cv_mean', 0):.4f}"
+                
+                doc.add_paragraph()
+            
             if 'model_comparison' in chart_paths:
-                doc.add_heading('5.1 Model Performance', 2)
+                doc.add_heading('5.2 Model Performance', 2)
                 doc.add_picture(str(chart_paths['model_comparison']), width=Inches(6))
                 doc.add_paragraph()
             
             if 'feature_importance' in chart_paths:
-                doc.add_heading('5.2 Feature Importance', 2)
+                doc.add_heading('5.3 Feature Importance', 2)
                 doc.add_picture(str(chart_paths['feature_importance']), width=Inches(6))
                 doc.add_paragraph()
         

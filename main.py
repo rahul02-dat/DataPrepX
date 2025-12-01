@@ -1,10 +1,11 @@
 import argparse
 from pathlib import Path
-from modules.utils import setup_logging, load_config
+from modules.utils import setup_logging, load_config, load_data
 from modules.preprocess import DataPreprocessor
 from modules.estimation import ModelEstimator
 from modules.explainability import ExplainabilityAnalyzer
 from modules.report_gen import ReportGenerator
+from modules.ai_summarizer import AISummarizer
 
 logger = setup_logging()
 
@@ -20,7 +21,6 @@ Examples:
         """
     )
     
-    # Made arguments optional with default values
     parser.add_argument('--input', '-i', required=False, type=str,
                        default='data/loan_approval.csv',
                        help='Input data file path (CSV or XLSX). Default: data/loan_approval.csv')
@@ -50,7 +50,7 @@ Examples:
         logger.setLevel(10)
     
     logger.info("=" * 70)
-    logger.info("DataPrepX v1.1 - Starting Pipeline")
+    logger.info("DataPrepX v1.1 - Starting AI-Enhanced Pipeline")
     logger.info(f"Input File: {args.input}")
     logger.info(f"Target Column: {args.target}")
     logger.info(f"Task Type: {args.task}")
@@ -67,41 +67,30 @@ Examples:
         output_dir = Path(args.output)
         output_dir.mkdir(parents=True, exist_ok=True)
         
-        logger.info(f"Step 1/5: Loading data from {args.input}")
-        
-        # Load data first
-        from modules.utils import load_data
-        import pandas as pd
+        logger.info(f"Step 1/6: Loading data from {args.input}")
         
         df_original = load_data(args.input)
         
-        # Verify target column exists
         if args.target not in df_original.columns:
             raise ValueError(f"Target column '{args.target}' not found in dataset. Available columns: {list(df_original.columns)}")
         
-        # Save the target column BEFORE preprocessing
         target_column = df_original[args.target].copy()
         
-        # Remove target from dataframe for preprocessing
         df_features = df_original.drop(columns=[args.target])
         
-        # Save features dataframe temporarily
         temp_file = Path('temp_features.csv')
         df_features.to_csv(temp_file, index=False)
         
-        # Preprocess only the features (not the target)
         preprocessor = DataPreprocessor(config['preprocessing'])
         df_clean, metadata = preprocessor.process(str(temp_file))
         
-        # Remove temp file
         temp_file.unlink()
         
-        # Add back the original target column (unscaled)
         df_clean[args.target] = target_column.values
         
         logger.info(f"✓ Data preprocessed: {df_clean.shape[0]} rows, {df_clean.shape[1]} columns")
         
-        logger.info(f"Step 2/5: Training ML models (Task: {args.task})")
+        logger.info(f"Step 2/6: Training ML models (Task: {args.task})")
         estimator = ModelEstimator(config['estimation'])
         results = estimator.fit_and_evaluate(df_clean, args.target, args.task)
         
@@ -113,7 +102,7 @@ Examples:
         
         explainability_results = None
         if args.explain and results['best_model']:
-            logger.info("Step 3/5: Generating explainability analysis")
+            logger.info("Step 3/6: Generating explainability analysis")
             explainer = ExplainabilityAnalyzer(config.get('explainability', {}))
             explainability_results = explainer.analyze(
                 estimator.models[results['best_model']],
@@ -123,18 +112,42 @@ Examples:
             )
             logger.info("✓ Explainability analysis complete")
         else:
-            logger.info("Step 3/5: Skipping explainability (use --explain to enable)")
+            logger.info("Step 3/6: Skipping explainability (use --explain to enable)")
         
-        logger.info("Step 4/5: Generating reports")
+        logger.info("Step 4/6: Generating AI-powered summary")
+        
+        ai_config = {
+            'api_url': 'http://localhost:1234/v1/chat/completions',
+            'model': 'openai/gpt-oss-20b'
+        }
+        
+        summarizer = AISummarizer(ai_config)
+        
+        df_info = {
+            'columns': df_clean.columns.tolist(),
+            'dtypes': df_clean.dtypes.to_dict(),
+            'shape': df_clean.shape
+        }
+        
+        ai_summary = summarizer.generate_summary(df_info, metadata, results)
+        
+        logger.info("\n" + "=" * 70)
+        logger.info("AI-GENERATED ANALYSIS SUMMARY")
+        logger.info("=" * 70)
+        logger.info(ai_summary)
+        logger.info("=" * 70 + "\n")
+        
+        results['ai_summary'] = ai_summary
+        
+        logger.info("Step 5/6: Generating reports")
         report_gen = ReportGenerator(config['report'])
         
-        # FIXED: Pass only 5 arguments
         report_paths = report_gen.generate(
             df_clean, metadata, results,
             output_dir, args.report_format
         )
         
-        logger.info("Step 5/5: Pipeline complete!")
+        logger.info("Step 6/6: Pipeline complete!")
         logger.info("=" * 70)
         logger.info("Generated Reports:")
         for path in report_paths:
