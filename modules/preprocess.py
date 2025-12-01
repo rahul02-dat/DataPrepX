@@ -22,6 +22,8 @@ class DataPreprocessor:
         self.metadata['original_columns'] = df.columns.tolist()
         self.metadata['original_dtypes'] = df.dtypes.to_dict()
         
+        logger.info(f"Original data shape: {df.shape}")
+        
         df = self._handle_missing_values(df)
         df = self._remove_duplicates(df)
         df = self._handle_outliers(df)
@@ -33,20 +35,23 @@ class DataPreprocessor:
         self.metadata['final_columns'] = df.columns.tolist()
         self.metadata['column_types'] = detect_column_types(df)
         
+        logger.info(f"Final data shape: {df.shape}")
+        
         return df, self.metadata
     
     def _handle_missing_values(self, df: pd.DataFrame) -> pd.DataFrame:
-        logger.info("Handling missing values...")
-        
         missing_summary = df.isnull().sum()
         self.metadata['missing_values'] = missing_summary[missing_summary > 0].to_dict()
+        
+        if missing_summary.sum() == 0:
+            return df
         
         strategy = self.config.get('missing_strategy', 'auto')
         threshold = self.config.get('missing_threshold', 0.5)
         
         high_missing_cols = missing_summary[missing_summary / len(df) > threshold].index.tolist()
         if high_missing_cols:
-            logger.warning(f"Dropping columns with >{threshold*100}% missing: {high_missing_cols}")
+            logger.info(f"Dropping {len(high_missing_cols)} columns with >{threshold*100}% missing data")
             df = df.drop(columns=high_missing_cols)
         
         numeric_cols = df.select_dtypes(include=[np.number]).columns
@@ -70,20 +75,18 @@ class DataPreprocessor:
         return df
     
     def _remove_duplicates(self, df: pd.DataFrame) -> pd.DataFrame:
-        logger.info("Removing duplicates...")
-        
         initial_rows = len(df)
         df = df.drop_duplicates()
         duplicates_removed = initial_rows - len(df)
         
         self.metadata['duplicates_removed'] = duplicates_removed
-        logger.info(f"Removed {duplicates_removed} duplicate rows")
+        
+        if duplicates_removed > 0:
+            logger.info(f"Removed {duplicates_removed} duplicate rows")
         
         return df
     
     def _handle_outliers(self, df: pd.DataFrame) -> pd.DataFrame:
-        logger.info("Handling outliers...")
-        
         method = self.config.get('outlier_method', 'iqr')
         numeric_cols = df.select_dtypes(include=[np.number]).columns
         
@@ -116,8 +119,6 @@ class DataPreprocessor:
         return df
     
     def _encode_categorical(self, df: pd.DataFrame) -> pd.DataFrame:
-        logger.info("Encoding categorical variables...")
-        
         categorical_cols = df.select_dtypes(include=['object', 'category']).columns
         encoding_map = {}
         
@@ -140,8 +141,6 @@ class DataPreprocessor:
         return df
     
     def _scale_features(self, df: pd.DataFrame) -> pd.DataFrame:
-        logger.info("Scaling features...")
-        
         if not self.config.get('scale_features', True):
             return df
         
@@ -163,8 +162,6 @@ class DataPreprocessor:
         return df
     
     def _feature_engineering(self, df: pd.DataFrame) -> pd.DataFrame:
-        logger.info("Performing feature engineering...")
-        
         if not self.config.get('feature_engineering', True):
             return df
         

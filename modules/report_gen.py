@@ -1,3 +1,6 @@
+import matplotlib
+matplotlib.use('Agg')
+
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
@@ -18,6 +21,7 @@ from modules.utils import setup_logging, get_timestamp
 logger = setup_logging()
 sns.set_style('whitegrid')
 plt.rcParams['figure.figsize'] = (10, 6)
+plt.ioff()
 
 class ReportGenerator:
     def __init__(self, config: Dict[str, Any]):
@@ -65,7 +69,7 @@ class ReportGenerator:
             plt.tight_layout()
             path = self.charts_dir / 'boxplot.png'
             plt.savefig(path, dpi=300, bbox_inches='tight')
-            plt.close()
+            plt.close(fig)
             chart_paths['boxplot'] = path
         
         if len(numeric_cols) >= 2:
@@ -77,7 +81,7 @@ class ReportGenerator:
             plt.tight_layout()
             path = self.charts_dir / 'correlation.png'
             plt.savefig(path, dpi=300, bbox_inches='tight')
-            plt.close()
+            plt.close(fig)
             chart_paths['correlation'] = path
         
         if numeric_cols:
@@ -96,7 +100,7 @@ class ReportGenerator:
             plt.tight_layout()
             path = self.charts_dir / 'distributions.png'
             plt.savefig(path, dpi=300, bbox_inches='tight')
-            plt.close()
+            plt.close(fig)
             chart_paths['distributions'] = path
         
         if results and 'feature_importance' in results:
@@ -113,7 +117,7 @@ class ReportGenerator:
                 plt.tight_layout()
                 path = self.charts_dir / 'feature_importance.png'
                 plt.savefig(path, dpi=300, bbox_inches='tight')
-                plt.close()
+                plt.close(fig)
                 chart_paths['feature_importance'] = path
         
         if results and 'models' in results:
@@ -140,7 +144,7 @@ class ReportGenerator:
             plt.tight_layout()
             path = self.charts_dir / 'model_comparison.png'
             plt.savefig(path, dpi=300, bbox_inches='tight')
-            plt.close()
+            plt.close(fig)
             chart_paths['model_comparison'] = path
         
         return chart_paths

@@ -8,10 +8,14 @@ import pandas as pd
 
 def setup_logging(log_file: str = None, level: int = logging.INFO) -> logging.Logger:
     logger = logging.getLogger('DataPrepX')
+    
+    if logger.handlers:
+        return logger
+    
     logger.setLevel(level)
     
     formatter = logging.Formatter(
-        '%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        '%(asctime)s - %(levelname)s - %(message)s',
         datefmt='%Y-%m-%d %H:%M:%S'
     )
     
@@ -25,6 +29,8 @@ def setup_logging(log_file: str = None, level: int = logging.INFO) -> logging.Lo
         file_handler.setLevel(level)
         file_handler.setFormatter(formatter)
         logger.addHandler(file_handler)
+    
+    logger.propagate = False
     
     return logger
 
@@ -65,7 +71,7 @@ def load_data(file_path: str) -> pd.DataFrame:
     elif file_path.suffix in ['.xlsx', '.xls']:
         df = pd.read_excel(file_path)
     else:
-        raise ValueError(f"Unsupported file format: {file_path.suffix}")
+        raise ValueError(f"Unsupported file format: {file_path.suffix}. Supported formats: .csv, .xlsx, .xls")
     
     return df
 

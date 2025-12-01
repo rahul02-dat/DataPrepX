@@ -32,7 +32,7 @@ class ModelEstimator:
         else:
             self.task_type = task
         
-        logger.info(f"Task type detected/specified: {self.task_type}")
+        logger.info(f"Task type: {self.task_type}")
         
         X_train, X_test, y_train, y_test = train_test_split(
             X, y, 
@@ -52,8 +52,6 @@ class ModelEstimator:
         }
         
         for name, model in models_to_try.items():
-            logger.info(f"Training {name}...")
-            
             try:
                 model.fit(X_train, y_train)
                 y_pred = model.predict(X_test)
@@ -76,7 +74,7 @@ class ModelEstimator:
                     self.best_model = name
                     self.models[name] = model
                 
-                logger.info(f"{name} - Score: {score:.4f}, CV: {cv_scores.mean():.4f} (+/- {cv_scores.std():.4f})")
+                logger.info(f"{name}: Score={score:.4f}, CV={cv_scores.mean():.4f} ±{cv_scores.std():.4f}")
                 
             except Exception as e:
                 logger.warning(f"Failed to train {name}: {str(e)}")
