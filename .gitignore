@@ -6,3 +6,4 @@ output/
 .coverage
 .coveragerc
 .DS_Store
+uploads/
