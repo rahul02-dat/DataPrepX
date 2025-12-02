@@ -16,6 +16,7 @@ from modules.preprocess import DataPreprocessor
 from modules.estimation import ModelEstimator
 from modules.explainability import ExplainabilityAnalyzer
 from modules.report_gen import ReportGenerator
+from modules.ai_summarizer import AISummarizer  # AI Integration
 
 # Page configuration
 st.set_page_config(
@@ -68,6 +69,13 @@ st.markdown("""
         font-size: 1rem;
         font-weight: 600;
     }
+    .ai-summary-box {
+        background: linear-gradient(135deg, #667eea15 0%, #764ba215 100%);
+        border-left: 4px solid #667eea;
+        padding: 1.5rem;
+        border-radius: 8px;
+        margin: 1rem 0;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -82,6 +90,8 @@ if 'original_data' not in st.session_state:
     st.session_state.original_data = None
 if 'processing_complete' not in st.session_state:
     st.session_state.processing_complete = False
+if 'ai_summary' not in st.session_state:
+    st.session_state.ai_summary = None
 
 # Header
 st.markdown('<h1 class="main-header">🤖 DataPrepX</h1>', unsafe_allow_html=True)
@@ -135,6 +145,27 @@ with st.sidebar:
         options=['auto', 'classification', 'regression'],
         help="Auto-detect or manually specify the task type"
     )
+
+    st.divider()
+
+    # AI Configuration Section
+    st.subheader("🤖 AI Configuration")
+    
+    with st.expander("AI Settings", expanded=False):
+        ai_api_url = st.text_input(
+            "AI API URL",
+            value="http://localhost:1234/v1/chat/completions",
+            help="LLM Studio API endpoint"
+        )
+        
+        ai_model = st.text_input(
+            "Model Name",
+            value="openai/gpt-oss-20b",
+            help="Model identifier for LLM Studio"
+        )
+        
+        enable_ai_summary = st.checkbox("Generate AI Summary", value=True)
+        enable_ai_insights = st.checkbox("Generate AI Insights", value=True)
 
     st.divider()
 
@@ -212,10 +243,11 @@ if st.session_state.original_data is None and not uploaded_file:
 
 elif st.session_state.original_data is not None:
     # Create tabs for different views
-    tab1, tab2, tab3, tab4, tab5 = st.tabs([
+    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
         "📊 Data Explorer",
         "🔄 Processing",
-        "🤖 Model Results",
+        "🤖 AI Insights",
+        "📈 Model Results",
         "💡 Explainability",
         "📄 Reports"
     ])
@@ -373,7 +405,7 @@ elif st.session_state.original_data is not None:
                     # Explainability
                     if enable_explain and results['best_model']:
                         status_text.text("💡 Generating explainability analysis...")
-                        progress_bar.progress(80)
+                        progress_bar.progress(75)
                         time.sleep(0.5)
 
                         explainer = ExplainabilityAnalyzer(config.get('explainability', {}))
@@ -384,6 +416,46 @@ elif st.session_state.original_data is not None:
                             results['task_type']
                         )
                         st.session_state.explainability = explainability_results
+
+                    # AI Summary Generation
+                    if enable_ai_summary:
+                        status_text.text("🤖 Generating AI summary...")
+                        progress_bar.progress(85)
+                        time.sleep(0.5)
+
+                        try:
+                            ai_config = {
+                                'api_url': ai_api_url,
+                                'model': ai_model
+                            }
+                            
+                            summarizer = AISummarizer(ai_config)
+                            df_info = {
+                                'columns': df_clean.columns.tolist(),
+                                'dtypes': df_clean.dtypes.to_dict(),
+                                'shape': df_clean.shape
+                            }
+                            
+                            ai_summary = summarizer.generate_summary(df_info, metadata, results)
+                            st.session_state.ai_summary = ai_summary
+                            results['ai_summary'] = ai_summary
+                            
+                            # Generate additional AI insights if enabled
+                            if enable_ai_insights:
+                                data_quality_report = summarizer.generate_data_quality_report(df_clean, metadata)
+                                model_insights = summarizer.generate_model_insights(results)
+                                business_recommendations = summarizer.generate_business_recommendations(
+                                    df_info, metadata, results
+                                )
+                                
+                                st.session_state.ai_insights = {
+                                    'data_quality': data_quality_report,
+                                    'model_insights': model_insights,
+                                    'business_recommendations': business_recommendations
+                                }
+                        except Exception as e:
+                            st.warning(f"⚠️ AI summary generation failed: {str(e)}")
+                            st.info("💡 Make sure LLM Studio is running at the configured URL")
 
                     # Generate Reports
                     status_text.text("📄 Generating reports...")
@@ -469,8 +541,59 @@ elif st.session_state.original_data is not None:
         else:
             st.info("👆 Click 'Start Processing' in the sidebar to begin the ML pipeline")
 
-    # Tab 3: Model Results
+    # Tab 3: AI Insights (NEW)
     with tab3:
+        if st.session_state.ai_summary:
+            st.subheader("🤖 AI-Generated Executive Summary")
+            
+            st.markdown(f"""
+            <div class="ai-summary-box">
+                {st.session_state.ai_summary.replace(chr(10), '<br>')}
+            </div>
+            """, unsafe_allow_html=True)
+            
+            st.divider()
+            
+            # Additional AI Insights if available
+            if hasattr(st.session_state, 'ai_insights') and st.session_state.ai_insights:
+                insights = st.session_state.ai_insights
+                
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    with st.expander("📊 Data Quality Report", expanded=True):
+                        st.markdown(insights['data_quality'])
+                
+                with col2:
+                    with st.expander("🎯 Model Insights", expanded=True):
+                        st.markdown(insights['model_insights'])
+                
+                st.divider()
+                
+                with st.expander("💼 Business Recommendations", expanded=True):
+                    st.markdown(insights['business_recommendations'])
+        else:
+            st.info("👆 Process your data with AI enabled to see AI-generated insights")
+            
+            st.markdown("""
+            ### 🤖 AI-Powered Analysis
+            
+            When you enable AI analysis, you'll get:
+            
+            - **Executive Summary**: High-level overview of your data and model performance
+            - **Data Quality Report**: Detailed assessment of data completeness and integrity
+            - **Model Insights**: AI interpretation of model performance and feature importance
+            - **Business Recommendations**: Actionable insights for stakeholders
+            
+            **Setup Requirements:**
+            1. Install and run LLM Studio on your local machine
+            2. Configure the API URL in the sidebar (default: http://localhost:1234)
+            3. Select your preferred model
+            4. Enable AI summary generation
+            """)
+
+    # Tab 4: Model Results
+    with tab4:
         if st.session_state.results:
             results = st.session_state.results
 
@@ -549,7 +672,7 @@ elif st.session_state.original_data is not None:
                 for model_name, metrics in results['models'].items():
                     st.subheader(f"**{model_name}**")
 
-                    metrics_cols = st.columns(len(metrics) - 2)  # Exclude cv_mean and cv_std
+                    metrics_cols = st.columns(len(metrics) - 2)
                     idx = 0
                     for key, value in metrics.items():
                         if key not in ['cv_mean', 'cv_std']:
@@ -561,8 +684,8 @@ elif st.session_state.original_data is not None:
         else:
             st.info("👆 Process your data first to see model results")
 
-    # Tab 4: Explainability
-    with tab4:
+    # Tab 5: Explainability
+    with tab5:
         if hasattr(st.session_state, 'explainability') and st.session_state.explainability:
             explain_results = st.session_state.explainability
 
@@ -634,8 +757,8 @@ elif st.session_state.original_data is not None:
         else:
             st.info("👆 Enable explainability analysis in the sidebar and process your data to see insights")
 
-    # Tab 5: Reports
-    with tab5:
+    # Tab 6: Reports
+    with tab6:
         if hasattr(st.session_state, 'report_paths') and st.session_state.report_paths:
             st.subheader("📄 Generated Reports")
 
@@ -666,13 +789,13 @@ elif st.session_state.original_data is not None:
             # Report preview info
             st.info("""
             📋 **Report Contents:**
-            - Executive Summary
+            - Executive Summary (including AI-generated insights)
             - Data Overview & Statistics
             - Preprocessing Details
             - Model Performance Metrics
             - Feature Importance Analysis
             - Visualizations & Charts
-            - AI-Generated Insights
+            - AI-Generated Business Recommendations
             """)
 
         else:
@@ -682,7 +805,7 @@ elif st.session_state.original_data is not None:
 st.divider()
 st.markdown("""
 <div style='text-align: center; color: #666; padding: 2rem;'>
-    <p>Built with ❤️ using Streamlit | DataPrepX v1.1</p>
+    <p>Built with ❤️ using Streamlit | DataPrepX v1.1 with AI Integration</p>
     <p>©️ 2024 DataPrepX Team | AI-Powered ML Pipeline</p>
 </div>
 """, unsafe_allow_html=True)
