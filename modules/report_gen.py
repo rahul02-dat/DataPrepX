@@ -8,59 +8,217 @@ import seaborn as sns
 from pathlib import Path
 from typing import Dict, Any, List
 from datetime import datetime
+import math
+import logging
+
+# ReportLab / docx imports
 from reportlab.lib.pagesizes import letter, A4
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.units import inch
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image, Table, TableStyle, PageBreak
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image as RLImage, Table, TableStyle, PageBreak
 from reportlab.lib import colors
 from docx import Document
 from docx.shared import Inches, Pt, RGBColor
 from docx.enum.text import WD_ALIGN_PARAGRAPH
+
+# Pillow safe imports (note: alias to avoid conflict with reportlab Image)
+from PIL import Image as PILImage, ImageFile
+# DecompressionBombError sits on PIL.Image in many versions; fall back to Exception if absent
+DecompressionBombError = getattr(PILImage, "DecompressionBombError", Exception)
+
+# Set a much higher limit to prevent decompression bomb warnings
+# This is safe when working with our own generated charts
+PIL_MAX_PIXELS = 2_000_000_000  # 2 billion pixels
+PILImage.MAX_IMAGE_PIXELS = PIL_MAX_PIXELS
+ImageFile.LOAD_TRUNCATED_IMAGES = True
+
 from modules.utils import setup_logging, get_timestamp
 
 logger = setup_logging()
+log = logging.getLogger(__name__)
+
 sns.set_style('whitegrid')
 plt.rcParams['figure.figsize'] = (10, 6)
 plt.ioff()
+
+
+def safe_load_image(image_path: Path, width: float = None, height: float = None) -> RLImage:
+    """
+    Safely load an image by temporarily disabling Pillow's decompression bomb check.
+    This is safe for our generated charts since we trust the source.
+    
+    - image_path: path to image file
+    - width: optional width constraint in inches (will be converted to points)
+    - height: optional height constraint in inches (will be converted to points)
+    - returns: reportlab Image object (scaled appropriately)
+    """
+    image_path = Path(image_path)
+    
+    # Temporarily disable the limit while opening/verifying the image
+    old_limit = PILImage.MAX_IMAGE_PIXELS
+    PILImage.MAX_IMAGE_PIXELS = None
+    
+    try:
+        # Try to open and verify the image to catch real issues early
+        with PILImage.open(str(image_path)) as img:
+            img.verify()
+            img_width, img_height = img.size
+    except Exception as e:
+        log.error(f"Failed to verify image {image_path}: {e}")
+        raise
+    finally:
+        # Restore the limit
+        PILImage.MAX_IMAGE_PIXELS = old_limit
+    
+    # Create ReportLab Image
+    rl_image = RLImage(str(image_path))
+    
+    # Apply width/height constraints if provided
+    if width is not None or height is not None:
+        # Convert inches to points (72 points per inch)
+        if width is not None:
+            width_pt = width * 72
+        else:
+            width_pt = None
+        
+        if height is not None:
+            height_pt = height * 72
+        else:
+            height_pt = None
+        
+        # Preserve aspect ratio
+        if width_pt is not None and height_pt is not None:
+            rl_image.drawWidth = width_pt
+            rl_image.drawHeight = height_pt
+        elif width_pt is not None:
+            # Set width and calculate height to maintain aspect ratio
+            rl_image.drawWidth = width_pt
+            aspect_ratio = rl_image.drawHeight / rl_image.drawWidth if rl_image.drawWidth else 1
+            rl_image.drawHeight = width_pt * aspect_ratio
+        elif height_pt is not None:
+            # Set height and calculate width to maintain aspect ratio
+            rl_image.drawHeight = height_pt
+            aspect_ratio = rl_image.drawWidth / rl_image.drawHeight if rl_image.drawHeight else 1
+            rl_image.drawWidth = height_pt * aspect_ratio
+    
+    return rl_image
+
+
+def safe_savefig(fig, path: Path, desired_dpi: int = 300, min_dpi: int = 50, max_width_inch: int = 18, max_height_inch: int = 12, **savefig_kwargs):
+    """
+    Save a matplotlib figure while ensuring the resulting raster image
+    doesn't exceed Pillow's MAX_IMAGE_PIXELS protection.
+
+    - fig: matplotlib.Figure
+    - path: target Path
+    - desired_dpi: dpi you'd like to save at (e.g. 300)
+    - min_dpi: minimum dpi to fall back to before resizing figure
+    - savefig_kwargs: forwarded to fig.savefig
+    """
+    path = Path(path)
+    width_in, height_in = fig.get_size_inches()
+    # Proactively reduce figure size if dimensions exceed the max allowed.
+    width_in = min(width_in, max_width_inch)
+    height_in = min(height_in, max_height_inch)
+    fig.set_size_inches(width_in, height_in)
+
+    area_in = width_in * height_in
+
+    try:
+        max_dpi_allowed = int(math.floor(math.sqrt(PIL_MAX_PIXELS / area_in)))
+    except Exception:
+        max_dpi_allowed = 100
+
+    # choose a DPI that's <= desired and <= allowed
+    dpi_to_use = desired_dpi
+    if max_dpi_allowed < dpi_to_use:
+        dpi_to_use = max(max_dpi_allowed, min_dpi)
+
+    def pixels_for(dpi_val):
+        return int(math.ceil(width_in * dpi_val)), int(math.ceil(height_in * dpi_val))
+
+    w_px, h_px = pixels_for(dpi_to_use)
+    if (w_px * h_px) > PIL_MAX_PIXELS:
+        # scale down figure size to fit the limit
+        scale = math.sqrt(PIL_MAX_PIXELS / (width_in * height_in)) / dpi_to_use
+        if scale <= 0 or scale > 1:
+            # compute scale purely from area if previous calc is odd
+            scale = min(1.0, math.sqrt(PIL_MAX_PIXELS / (width_in * height_in)) / max(1, dpi_to_use))
+        new_w = max(1.0, width_in * scale)
+        new_h = max(1.0, height_in * scale)
+        log.warning(f"safe_savefig: downscaling figure size from {(width_in, height_in)} to {(new_w, new_h)} to avoid Pillow limit")
+        fig.set_size_inches(new_w, new_h)
+
+        # recompute allowed dpi for new size
+        try:
+            max_dpi_allowed = int(math.floor(math.sqrt(PIL_MAX_PIXELS / (new_w * new_h))))
+        except Exception:
+            max_dpi_allowed = min_dpi
+        dpi_to_use = min(desired_dpi, max(max_dpi_allowed, min_dpi))
+
+    # final attempt to save, with retries on DecompressionBombError
+    try:
+        fig.savefig(str(path), dpi=dpi_to_use, bbox_inches='tight', **savefig_kwargs)
+    except DecompressionBombError:
+        log.warning("Pillow DecompressionBombError on save; trying lower dpi and smaller size")
+        # reduce dpi progressively and retry
+        for attempt in range(4):
+            dpi_to_use = max(min_dpi, dpi_to_use // 2)
+            try:
+                fig.savefig(str(path), dpi=dpi_to_use, bbox_inches='tight', **savefig_kwargs)
+                break
+            except DecompressionBombError:
+                continue
+        else:
+            # last resort: temporarily disable pillow limit to save (risky)
+            log.error("safe_savefig: failed to save within safe limits; temporarily disabling Pillow limit to save file (risky).")
+            old = getattr(PILImage, 'MAX_IMAGE_PIXELS', None)
+            PILImage.MAX_IMAGE_PIXELS = None
+            try:
+                fig.savefig(str(path), dpi=min(desired_dpi, 150), bbox_inches='tight', **savefig_kwargs)
+            finally:
+                if old is not None:
+                    PILImage.MAX_IMAGE_PIXELS = old
+
 
 class ReportGenerator:
     def __init__(self, config: Dict[str, Any]):
         self.config = config
         self.charts_dir = None
-        
-    def generate(self, df: pd.DataFrame, metadata: Dict[str, Any], 
-                results: Dict[str, Any], output_dir: Path, 
-                report_format: str = 'pdf') -> List[Path]:
-        
+
+    def generate(self, df: pd.DataFrame, metadata: Dict[str, Any],
+                 results: Dict[str, Any], output_dir: Path,
+                 report_format: str = 'pdf') -> List[Path]:
+
         self.charts_dir = output_dir / 'charts'
         self.charts_dir.mkdir(parents=True, exist_ok=True)
-        
+
         logger.info("Generating visualizations...")
         chart_paths = self._generate_charts(df, metadata, results)
-        
+
         report_paths = []
         timestamp = get_timestamp()
-        
+
         if report_format in ['pdf', 'both']:
             pdf_path = output_dir / f'DataPrepX_Report_{timestamp}.pdf'
             self._generate_pdf_report(df, metadata, results, chart_paths, pdf_path)
             report_paths.append(pdf_path)
             logger.info(f"PDF report generated: {pdf_path}")
-        
+
         if report_format in ['docx', 'both']:
             docx_path = output_dir / f'DataPrepX_Report_{timestamp}.docx'
             self._generate_docx_report(df, metadata, results, chart_paths, docx_path)
             report_paths.append(docx_path)
             logger.info(f"DOCX report generated: {docx_path}")
-        
+
         return report_paths
-    
-    def _generate_charts(self, df: pd.DataFrame, metadata: Dict[str, Any], 
-                        results: Dict[str, Any]) -> Dict[str, Path]:
+
+    def _generate_charts(self, df: pd.DataFrame, metadata: Dict[str, Any],
+                         results: Dict[str, Any]) -> Dict[str, Path]:
         chart_paths = {}
-        
+
         numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
-        
+
         if numeric_cols:
             fig, ax = plt.subplots(figsize=(12, 8))
             df[numeric_cols[:10]].boxplot(ax=ax, rot=45)
@@ -68,47 +226,47 @@ class ReportGenerator:
             ax.set_ylabel('Value')
             plt.tight_layout()
             path = self.charts_dir / 'boxplot.png'
-            plt.savefig(path, dpi=300, bbox_inches='tight')
+            safe_savefig(fig, path, desired_dpi=150, min_dpi=72)
             plt.close(fig)
             chart_paths['boxplot'] = path
-        
+
         if len(numeric_cols) >= 2:
             corr_matrix = df[numeric_cols].corr()
             fig, ax = plt.subplots(figsize=(12, 10))
-            sns.heatmap(corr_matrix, annot=True, fmt='.2f', cmap='coolwarm', 
-                       center=0, ax=ax, cbar_kws={'label': 'Correlation'})
+            sns.heatmap(corr_matrix, annot=True, fmt='.2f', cmap='coolwarm',
+                        center=0, ax=ax, cbar_kws={'label': 'Correlation'})
             ax.set_title('Feature Correlation Matrix', fontsize=14, fontweight='bold')
             plt.tight_layout()
             path = self.charts_dir / 'correlation.png'
-            plt.savefig(path, dpi=300, bbox_inches='tight')
+            safe_savefig(fig, path, desired_dpi=150, min_dpi=72)
             plt.close(fig)
             chart_paths['correlation'] = path
-        
+
         if numeric_cols:
             fig, axes = plt.subplots(2, 2, figsize=(14, 10))
             axes = axes.flatten()
-            
+
             for i, col in enumerate(numeric_cols[:4]):
                 axes[i].hist(df[col].dropna(), bins=30, edgecolor='black', alpha=0.7)
                 axes[i].set_title(f'Distribution: {col}', fontweight='bold')
                 axes[i].set_xlabel(col)
                 axes[i].set_ylabel('Frequency')
-            
+
             for i in range(len(numeric_cols[:4]), 4):
                 axes[i].axis('off')
-            
+
             plt.tight_layout()
             path = self.charts_dir / 'distributions.png'
-            plt.savefig(path, dpi=300, bbox_inches='tight')
+            safe_savefig(fig, path, desired_dpi=150, min_dpi=72)
             plt.close(fig)
             chart_paths['distributions'] = path
-        
+
         if results and 'feature_importance' in results:
             importance = results['feature_importance']
             if importance:
                 features = list(importance.keys())[:15]
                 values = [importance[f] for f in features]
-                
+
                 fig, ax = plt.subplots(figsize=(10, 8))
                 ax.barh(features, values, color='steelblue')
                 ax.set_xlabel('Importance', fontweight='bold')
@@ -116,50 +274,55 @@ class ReportGenerator:
                 ax.invert_yaxis()
                 plt.tight_layout()
                 path = self.charts_dir / 'feature_importance.png'
-                plt.savefig(path, dpi=300, bbox_inches='tight')
+                safe_savefig(fig, path, desired_dpi=150, min_dpi=72)
                 plt.close(fig)
                 chart_paths['feature_importance'] = path
-        
+
         if results and 'models' in results:
             model_names = list(results['models'].keys())
-            if results['task_type'] == 'classification':
+            if results.get('task_type') == 'classification':
                 scores = [results['models'][m].get('accuracy', 0) for m in model_names]
                 metric = 'Accuracy'
             else:
                 scores = [results['models'][m].get('r2_score', 0) for m in model_names]
                 metric = 'R² Score'
-            
-            fig, ax = plt.subplots(figsize=(10, 6))
-            bars = ax.bar(model_names, scores, color=['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728'])
+
+            # Use smaller figure size to reduce pixel count
+            fig, ax = plt.subplots(figsize=(8, 5))
+            # color list resilient to different model counts
+            colors_list = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728']
+            bars = ax.bar(model_names, scores, color=[colors_list[i % len(colors_list)] for i in range(len(model_names))])
             ax.set_ylabel(metric, fontweight='bold')
             ax.set_title(f'Model Performance Comparison ({metric})', fontsize=14, fontweight='bold')
-            ax.set_ylim([0, max(scores) * 1.1])
-            
+            max_score = max(scores) if scores else 1.0
+            ax.set_ylim([0, max_score * 1.1])
+
             for bar in bars:
                 height = bar.get_height()
-                ax.text(bar.get_x() + bar.get_width()/2., height,
-                       f'{height:.3f}', ha='center', va='bottom', fontweight='bold')
-            
+                ax.text(bar.get_x() + bar.get_width() / 2., height,
+                        f'{height:.3f}', ha='center', va='bottom', fontweight='bold')
+
             plt.xticks(rotation=45, ha='right')
             plt.tight_layout()
             path = self.charts_dir / 'model_comparison.png'
-            plt.savefig(path, dpi=300, bbox_inches='tight')
+            # Use lower DPI for model comparison to reduce file size
+            safe_savefig(fig, path, desired_dpi=150, min_dpi=72)
             plt.close(fig)
             chart_paths['model_comparison'] = path
-        
+
         return chart_paths
-    
+
     def _generate_pdf_report(self, df: pd.DataFrame, metadata: Dict[str, Any],
-                            results: Dict[str, Any], chart_paths: Dict[str, Path],
-                            output_path: Path):
-        
+                             results: Dict[str, Any], chart_paths: Dict[str, Path],
+                             output_path: Path):
+
         doc = SimpleDocTemplate(str(output_path), pagesize=letter,
                                rightMargin=72, leftMargin=72,
                                topMargin=72, bottomMargin=18)
-        
+
         story = []
         styles = getSampleStyleSheet()
-        
+
         title_style = ParagraphStyle(
             'CustomTitle',
             parent=styles['Heading1'],
@@ -168,7 +331,7 @@ class ReportGenerator:
             spaceAfter=30,
             alignment=1
         )
-        
+
         heading_style = ParagraphStyle(
             'CustomHeading',
             parent=styles['Heading2'],
@@ -177,14 +340,14 @@ class ReportGenerator:
             spaceAfter=12,
             spaceBefore=12
         )
-        
+
         story.append(Paragraph("DataPrepX Analysis Report", title_style))
         story.append(Spacer(1, 12))
         story.append(Paragraph(f"Generated on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", styles['Normal']))
         story.append(Spacer(1, 30))
-        
+
         story.append(Paragraph("1. Executive Summary", heading_style))
-        
+
         if results and 'ai_summary' in results:
             summary_paragraphs = results['ai_summary'].split('\n\n')
             for para in summary_paragraphs:
@@ -198,11 +361,11 @@ class ReportGenerator:
             after preprocessing and feature engineering.
             """
             story.append(Paragraph(summary_text, styles['BodyText']))
-        
+
         story.append(Spacer(1, 20))
-        
+
         story.append(Paragraph("2. Data Overview", heading_style))
-        
+
         data_table_data = [
             ['Metric', 'Value'],
             ['Original Rows', f"{metadata['original_shape'][0]:,}"],
@@ -211,8 +374,8 @@ class ReportGenerator:
             ['Final Columns', str(metadata['final_shape'][1])],
             ['Duplicates Removed', str(metadata.get('duplicates_removed', 0))]
         ]
-        
-        data_table = Table(data_table_data, colWidths=[3*inch, 3*inch])
+
+        data_table = Table(data_table_data, colWidths=[3 * inch, 3 * inch])
         data_table.setStyle(TableStyle([
             ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
             ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
@@ -223,10 +386,10 @@ class ReportGenerator:
             ('BACKGROUND', (0, 1), (-1, -1), colors.beige),
             ('GRID', (0, 0), (-1, -1), 1, colors.black)
         ]))
-        
+
         story.append(data_table)
         story.append(Spacer(1, 20))
-        
+
         if metadata.get('missing_values'):
             story.append(Paragraph("3. Missing Values Handled", heading_style))
             missing_text = "The following columns had missing values that were imputed:<br/>"
@@ -234,26 +397,26 @@ class ReportGenerator:
                 missing_text += f"• {col}: {count} missing values<br/>"
             story.append(Paragraph(missing_text, styles['BodyText']))
             story.append(Spacer(1, 20))
-        
+
         story.append(PageBreak())
-        
+
         story.append(Paragraph("4. Data Visualizations", heading_style))
-        
+
         if 'distributions' in chart_paths:
             story.append(Paragraph("4.1 Feature Distributions", styles['Heading3']))
-            story.append(Image(str(chart_paths['distributions']), width=6*inch, height=4*inch))
+            story.append(safe_load_image(chart_paths['distributions'], width=5.5, height=3.5))
             story.append(Spacer(1, 20))
-        
+
         if 'correlation' in chart_paths:
             story.append(Paragraph("4.2 Correlation Analysis", styles['Heading3']))
-            story.append(Image(str(chart_paths['correlation']), width=6*inch, height=5*inch))
+            story.append(safe_load_image(chart_paths['correlation'], width=5.5, height=4))
             story.append(Spacer(1, 20))
-        
+
         story.append(PageBreak())
-        
+
         if results:
             story.append(Paragraph("5. Machine Learning Results", heading_style))
-            
+
             ml_summary = f"""
             <b>Task Type:</b> {results['task_type'].title()}<br/>
             <b>Target Column:</b> {results['target_column']}<br/>
@@ -264,10 +427,10 @@ class ReportGenerator:
             """
             story.append(Paragraph(ml_summary, styles['BodyText']))
             story.append(Spacer(1, 20))
-            
+
             if results.get('models'):
                 story.append(Paragraph("5.1 Detailed Model Metrics", styles['Heading3']))
-                
+
                 if results['task_type'] == 'classification':
                     metrics_data = [['Model', 'Accuracy', 'Precision', 'Recall', 'F1-Score', 'CV Mean']]
                     for model_name, metrics in results['models'].items():
@@ -289,7 +452,7 @@ class ReportGenerator:
                             f"{metrics.get('mae', 0):.2f}",
                             f"{metrics.get('cv_mean', 0):.4f}"
                         ])
-                
+
                 metrics_table = Table(metrics_data)
                 metrics_table.setStyle(TableStyle([
                     ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
@@ -301,23 +464,23 @@ class ReportGenerator:
                     ('BACKGROUND', (0, 1), (-1, -1), colors.beige),
                     ('GRID', (0, 0), (-1, -1), 1, colors.black)
                 ]))
-                
+
                 story.append(metrics_table)
                 story.append(Spacer(1, 20))
-            
+
             if 'model_comparison' in chart_paths:
                 story.append(Paragraph("5.2 Model Performance", styles['Heading3']))
-                story.append(Image(str(chart_paths['model_comparison']), width=6*inch, height=4*inch))
+                story.append(safe_load_image(chart_paths['model_comparison'], width=5.5, height=3))
                 story.append(Spacer(1, 20))
-            
+
             if 'feature_importance' in chart_paths:
                 story.append(Paragraph("5.3 Feature Importance", styles['Heading3']))
-                story.append(Image(str(chart_paths['feature_importance']), width=6*inch, height=5*inch))
+                story.append(safe_load_image(chart_paths['feature_importance'], width=5.5, height=4))
                 story.append(Spacer(1, 20))
-        
+
         story.append(PageBreak())
         story.append(Paragraph("6. Conclusion", heading_style))
-        
+
         if results:
             conclusion = f"""
             The DataPrepX pipeline successfully processed the dataset, applying comprehensive
@@ -331,25 +494,25 @@ class ReportGenerator:
             preprocessing and feature engineering. All generated visualizations and detailed 
             metrics are included in this report.
             """
-        
+
         story.append(Paragraph(conclusion, styles['BodyText']))
-        
+
         doc.build(story)
-    
+
     def _generate_docx_report(self, df: pd.DataFrame, metadata: Dict[str, Any],
-                             results: Dict[str, Any], chart_paths: Dict[str, Path],
-                             output_path: Path):
-        
+                              results: Dict[str, Any], chart_paths: Dict[str, Path],
+                              output_path: Path):
+
         doc = Document()
-        
+
         title = doc.add_heading('DataPrepX Analysis Report', 0)
         title.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        
+
         doc.add_paragraph(f"Generated on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         doc.add_paragraph()
-        
+
         doc.add_heading('1. Executive Summary', 1)
-        
+
         if results and 'ai_summary' in results:
             summary_paragraphs = results['ai_summary'].split('\n\n')
             for para in summary_paragraphs:
@@ -361,11 +524,11 @@ class ReportGenerator:
                 f"The dataset contains {metadata['final_shape'][0]:,} rows and {metadata['final_shape'][1]} features "
                 f"after preprocessing and feature engineering."
             )
-        
+
         doc.add_heading('2. Data Overview', 1)
         table = doc.add_table(rows=6, cols=2)
         table.style = 'Light Grid Accent 1'
-        
+
         table.rows[0].cells[0].text = 'Metric'
         table.rows[0].cells[1].text = 'Value'
         table.rows[1].cells[0].text = 'Original Rows'
@@ -378,34 +541,34 @@ class ReportGenerator:
         table.rows[4].cells[1].text = str(metadata['final_shape'][1])
         table.rows[5].cells[0].text = 'Duplicates Removed'
         table.rows[5].cells[1].text = str(metadata.get('duplicates_removed', 0))
-        
+
         doc.add_paragraph()
-        
+
         if metadata.get('missing_values'):
             doc.add_heading('3. Missing Values Handled', 1)
             doc.add_paragraph("The following columns had missing values that were imputed:")
             for col, count in list(metadata['missing_values'].items())[:10]:
                 doc.add_paragraph(f"{col}: {count} missing values", style='List Bullet')
-        
+
         doc.add_page_break()
-        
+
         doc.add_heading('4. Data Visualizations', 1)
-        
+
         if 'distributions' in chart_paths:
             doc.add_heading('4.1 Feature Distributions', 2)
             doc.add_picture(str(chart_paths['distributions']), width=Inches(6))
             doc.add_paragraph()
-        
+
         if 'correlation' in chart_paths:
             doc.add_heading('4.2 Correlation Analysis', 2)
             doc.add_picture(str(chart_paths['correlation']), width=Inches(6))
             doc.add_paragraph()
-        
+
         doc.add_page_break()
-        
+
         if results:
             doc.add_heading('5. Machine Learning Results', 1)
-            
+
             doc.add_paragraph(f"Task Type: {results['task_type'].title()}")
             doc.add_paragraph(f"Target Column: {results['target_column']}")
             doc.add_paragraph(f"Training Samples: {results['train_size']:,}")
@@ -413,14 +576,14 @@ class ReportGenerator:
             doc.add_paragraph(f"Best Model: {results['best_model']}")
             doc.add_paragraph(f"Performance Score: {results['best_score']:.4f}")
             doc.add_paragraph()
-            
+
             if results.get('models'):
                 doc.add_heading('5.1 Detailed Model Metrics', 2)
-                
+
                 if results['task_type'] == 'classification':
-                    table = doc.add_table(rows=len(results['models'])+1, cols=6)
+                    table = doc.add_table(rows=len(results['models']) + 1, cols=6)
                     table.style = 'Light Grid Accent 1'
-                    
+
                     hdr_cells = table.rows[0].cells
                     hdr_cells[0].text = 'Model'
                     hdr_cells[1].text = 'Accuracy'
@@ -428,7 +591,7 @@ class ReportGenerator:
                     hdr_cells[3].text = 'Recall'
                     hdr_cells[4].text = 'F1-Score'
                     hdr_cells[5].text = 'CV Mean'
-                    
+
                     for idx, (model_name, metrics) in enumerate(results['models'].items(), 1):
                         row_cells = table.rows[idx].cells
                         row_cells[0].text = model_name
@@ -438,16 +601,16 @@ class ReportGenerator:
                         row_cells[4].text = f"{metrics.get('f1_score', 0):.4f}"
                         row_cells[5].text = f"{metrics.get('cv_mean', 0):.4f}"
                 else:
-                    table = doc.add_table(rows=len(results['models'])+1, cols=5)
+                    table = doc.add_table(rows=len(results['models']) + 1, cols=5)
                     table.style = 'Light Grid Accent 1'
-                    
+
                     hdr_cells = table.rows[0].cells
                     hdr_cells[0].text = 'Model'
                     hdr_cells[1].text = 'R² Score'
                     hdr_cells[2].text = 'RMSE'
                     hdr_cells[3].text = 'MAE'
                     hdr_cells[4].text = 'CV Mean'
-                    
+
                     for idx, (model_name, metrics) in enumerate(results['models'].items(), 1):
                         row_cells = table.rows[idx].cells
                         row_cells[0].text = model_name
@@ -455,23 +618,23 @@ class ReportGenerator:
                         row_cells[2].text = f"{metrics.get('rmse', 0):.2f}"
                         row_cells[3].text = f"{metrics.get('mae', 0):.2f}"
                         row_cells[4].text = f"{metrics.get('cv_mean', 0):.4f}"
-                
+
                 doc.add_paragraph()
-            
+
             if 'model_comparison' in chart_paths:
                 doc.add_heading('5.2 Model Performance', 2)
                 doc.add_picture(str(chart_paths['model_comparison']), width=Inches(6))
                 doc.add_paragraph()
-            
+
             if 'feature_importance' in chart_paths:
                 doc.add_heading('5.3 Feature Importance', 2)
                 doc.add_picture(str(chart_paths['feature_importance']), width=Inches(6))
                 doc.add_paragraph()
-        
+
         doc.add_page_break()
-        
+
         doc.add_heading('6. Conclusion', 1)
-        
+
         if results:
             conclusion_text = (
                 "The DataPrepX pipeline successfully processed the dataset, applying comprehensive "
@@ -485,7 +648,7 @@ class ReportGenerator:
                 "preprocessing and feature engineering. All generated visualizations and detailed "
                 "metrics are included in this report."
             )
-        
+
         doc.add_paragraph(conclusion_text)
-        
+
         doc.save(str(output_path))
