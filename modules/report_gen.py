@@ -11,7 +11,6 @@ from datetime import datetime
 import math
 import logging
 
-# ReportLab / docx imports
 from reportlab.lib.pagesizes import letter, A4
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.units import inch
@@ -21,14 +20,10 @@ from docx import Document
 from docx.shared import Inches, Pt, RGBColor
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 
-# Pillow safe imports (note: alias to avoid conflict with reportlab Image)
 from PIL import Image as PILImage, ImageFile
-# DecompressionBombError sits on PIL.Image in many versions; fall back to Exception if absent
 DecompressionBombError = getattr(PILImage, "DecompressionBombError", Exception)
 
-# Set a much higher limit to prevent decompression bomb warnings
-# This is safe when working with our own generated charts
-PIL_MAX_PIXELS = 2_000_000_000  # 2 billion pixels
+PIL_MAX_PIXELS = 2_000_000_000
 PILImage.MAX_IMAGE_PIXELS = PIL_MAX_PIXELS
 ImageFile.LOAD_TRUNCATED_IMAGES = True
 
@@ -43,23 +38,12 @@ plt.ioff()
 
 
 def safe_load_image(image_path: Path, width: float = None, height: float = None) -> RLImage:
-    """
-    Safely load an image by temporarily disabling Pillow's decompression bomb check.
-    This is safe for our generated charts since we trust the source.
-    
-    - image_path: path to image file
-    - width: optional width constraint in inches (will be converted to points)
-    - height: optional height constraint in inches (will be converted to points)
-    - returns: reportlab Image object (scaled appropriately)
-    """
     image_path = Path(image_path)
     
-    # Temporarily disable the limit while opening/verifying the image
     old_limit = PILImage.MAX_IMAGE_PIXELS
     PILImage.MAX_IMAGE_PIXELS = None
     
     try:
-        # Try to open and verify the image to catch real issues early
         with PILImage.open(str(image_path)) as img:
             img.verify()
             img_width, img_height = img.size
@@ -67,15 +51,11 @@ def safe_load_image(image_path: Path, width: float = None, height: float = None)
         log.error(f"Failed to verify image {image_path}: {e}")
         raise
     finally:
-        # Restore the limit
         PILImage.MAX_IMAGE_PIXELS = old_limit
     
-    # Create ReportLab Image
     rl_image = RLImage(str(image_path))
     
-    # Apply width/height constraints if provided
     if width is not None or height is not None:
-        # Convert inches to points (72 points per inch)
         if width is not None:
             width_pt = width * 72
         else:
@@ -86,17 +66,14 @@ def safe_load_image(image_path: Path, width: float = None, height: float = None)
         else:
             height_pt = None
         
-        # Preserve aspect ratio
         if width_pt is not None and height_pt is not None:
             rl_image.drawWidth = width_pt
             rl_image.drawHeight = height_pt
         elif width_pt is not None:
-            # Set width and calculate height to maintain aspect ratio
             rl_image.drawWidth = width_pt
             aspect_ratio = rl_image.drawHeight / rl_image.drawWidth if rl_image.drawWidth else 1
             rl_image.drawHeight = width_pt * aspect_ratio
         elif height_pt is not None:
-            # Set height and calculate width to maintain aspect ratio
             rl_image.drawHeight = height_pt
             aspect_ratio = rl_image.drawWidth / rl_image.drawHeight if rl_image.drawHeight else 1
             rl_image.drawWidth = height_pt * aspect_ratio
@@ -105,19 +82,8 @@ def safe_load_image(image_path: Path, width: float = None, height: float = None)
 
 
 def safe_savefig(fig, path: Path, desired_dpi: int = 300, min_dpi: int = 50, max_width_inch: int = 18, max_height_inch: int = 12, **savefig_kwargs):
-    """
-    Save a matplotlib figure while ensuring the resulting raster image
-    doesn't exceed Pillow's MAX_IMAGE_PIXELS protection.
-
-    - fig: matplotlib.Figure
-    - path: target Path
-    - desired_dpi: dpi you'd like to save at (e.g. 300)
-    - min_dpi: minimum dpi to fall back to before resizing figure
-    - savefig_kwargs: forwarded to fig.savefig
-    """
     path = Path(path)
     width_in, height_in = fig.get_size_inches()
-    # Proactively reduce figure size if dimensions exceed the max allowed.
     width_in = min(width_in, max_width_inch)
     height_in = min(height_in, max_height_inch)
     fig.set_size_inches(width_in, height_in)
@@ -129,7 +95,6 @@ def safe_savefig(fig, path: Path, desired_dpi: int = 300, min_dpi: int = 50, max
     except Exception:
         max_dpi_allowed = 100
 
-    # choose a DPI that's <= desired and <= allowed
     dpi_to_use = desired_dpi
     if max_dpi_allowed < dpi_to_use:
         dpi_to_use = max(max_dpi_allowed, min_dpi)
@@ -139,29 +104,24 @@ def safe_savefig(fig, path: Path, desired_dpi: int = 300, min_dpi: int = 50, max
 
     w_px, h_px = pixels_for(dpi_to_use)
     if (w_px * h_px) > PIL_MAX_PIXELS:
-        # scale down figure size to fit the limit
         scale = math.sqrt(PIL_MAX_PIXELS / (width_in * height_in)) / dpi_to_use
         if scale <= 0 or scale > 1:
-            # compute scale purely from area if previous calc is odd
             scale = min(1.0, math.sqrt(PIL_MAX_PIXELS / (width_in * height_in)) / max(1, dpi_to_use))
         new_w = max(1.0, width_in * scale)
         new_h = max(1.0, height_in * scale)
         log.warning(f"safe_savefig: downscaling figure size from {(width_in, height_in)} to {(new_w, new_h)} to avoid Pillow limit")
         fig.set_size_inches(new_w, new_h)
 
-        # recompute allowed dpi for new size
         try:
             max_dpi_allowed = int(math.floor(math.sqrt(PIL_MAX_PIXELS / (new_w * new_h))))
         except Exception:
             max_dpi_allowed = min_dpi
         dpi_to_use = min(desired_dpi, max(max_dpi_allowed, min_dpi))
 
-    # final attempt to save, with retries on DecompressionBombError
     try:
         fig.savefig(str(path), dpi=dpi_to_use, bbox_inches='tight', **savefig_kwargs)
     except DecompressionBombError:
         log.warning("Pillow DecompressionBombError on save; trying lower dpi and smaller size")
-        # reduce dpi progressively and retry
         for attempt in range(4):
             dpi_to_use = max(min_dpi, dpi_to_use // 2)
             try:
@@ -170,7 +130,6 @@ def safe_savefig(fig, path: Path, desired_dpi: int = 300, min_dpi: int = 50, max
             except DecompressionBombError:
                 continue
         else:
-            # last resort: temporarily disable pillow limit to save (risky)
             log.error("safe_savefig: failed to save within safe limits; temporarily disabling Pillow limit to save file (risky).")
             old = getattr(PILImage, 'MAX_IMAGE_PIXELS', None)
             PILImage.MAX_IMAGE_PIXELS = None
@@ -287,9 +246,7 @@ class ReportGenerator:
                 scores = [results['models'][m].get('r2_score', 0) for m in model_names]
                 metric = 'R² Score'
 
-            # Use smaller figure size to reduce pixel count
             fig, ax = plt.subplots(figsize=(8, 5))
-            # color list resilient to different model counts
             colors_list = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728']
             bars = ax.bar(model_names, scores, color=[colors_list[i % len(colors_list)] for i in range(len(model_names))])
             ax.set_ylabel(metric, fontweight='bold')
@@ -305,7 +262,6 @@ class ReportGenerator:
             plt.xticks(rotation=45, ha='right')
             plt.tight_layout()
             path = self.charts_dir / 'model_comparison.png'
-            # Use lower DPI for model comparison to reduce file size
             safe_savefig(fig, path, desired_dpi=150, min_dpi=72)
             plt.close(fig)
             chart_paths['model_comparison'] = path
@@ -341,6 +297,14 @@ class ReportGenerator:
             spaceBefore=12
         )
 
+        body_style = ParagraphStyle(
+            'CustomBody',
+            parent=styles['BodyText'],
+            fontSize=11,
+            leading=16,
+            spaceAfter=12
+        )
+
         story.append(Paragraph("DataPrepX Analysis Report", title_style))
         story.append(Spacer(1, 12))
         story.append(Paragraph(f"Generated on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", styles['Normal']))
@@ -349,18 +313,26 @@ class ReportGenerator:
         story.append(Paragraph("1. Executive Summary", heading_style))
 
         if results and 'ai_summary' in results:
-            summary_paragraphs = results['ai_summary'].split('\n\n')
+            summary_text = results['ai_summary']
+            summary_text = summary_text.replace('###', '').replace('##', '').replace('**', '')
+            summary_text = summary_text.replace('■', '').replace('▪', '').replace('•', '')
+            summary_text = summary_text.replace('\u2011', '-').replace('\xd7', 'x')
+            summary_text = summary_text.replace('\u2192', '->').replace('\xb2', '²')
+            
+            summary_paragraphs = summary_text.split('\n\n')
             for para in summary_paragraphs:
                 if para.strip():
-                    story.append(Paragraph(para.strip().replace('\n', '<br/>'), styles['BodyText']))
-                    story.append(Spacer(1, 6))
+                    clean_para = para.strip().replace('\n', ' ')
+                    clean_para = ' '.join(clean_para.split())
+                    if clean_para and not clean_para.startswith(('#', '-', '*', '.')):
+                        story.append(Paragraph(clean_para, body_style))
         else:
             summary_text = f"""
             This report provides a comprehensive analysis of the dataset processed through DataPrepX.
             The dataset contains {metadata['final_shape'][0]:,} rows and {metadata['final_shape'][1]} features
             after preprocessing and feature engineering.
             """
-            story.append(Paragraph(summary_text, styles['BodyText']))
+            story.append(Paragraph(summary_text, body_style))
 
         story.append(Spacer(1, 20))
 
@@ -377,14 +349,18 @@ class ReportGenerator:
 
         data_table = Table(data_table_data, colWidths=[3 * inch, 3 * inch])
         data_table.setStyle(TableStyle([
-            ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
+            ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#667eea')),
             ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
-            ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+            ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
             ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-            ('FONTSIZE', (0, 0), (-1, 0), 12),
-            ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
-            ('BACKGROUND', (0, 1), (-1, -1), colors.beige),
-            ('GRID', (0, 0), (-1, -1), 1, colors.black)
+            ('FONTSIZE', (0, 0), (-1, 0), 13),
+            ('FONTSIZE', (0, 1), (-1, -1), 11),
+            ('BOTTOMPADDING', (0, 0), (-1, 0), 14),
+            ('TOPPADDING', (0, 1), (-1, -1), 10),
+            ('BOTTOMPADDING', (0, 1), (-1, -1), 10),
+            ('BACKGROUND', (0, 1), (-1, -1), colors.HexColor('#f8f9ff')),
+            ('GRID', (0, 0), (-1, -1), 1, colors.HexColor('#e0e0e0')),
+            ('VALIGN', (0, 0), (-1, -1), 'MIDDLE')
         ]))
 
         story.append(data_table)
@@ -392,10 +368,29 @@ class ReportGenerator:
 
         if metadata.get('missing_values'):
             story.append(Paragraph("3. Missing Values Handled", heading_style))
-            missing_text = "The following columns had missing values that were imputed:<br/>"
-            for col, count in list(metadata['missing_values'].items())[:10]:
-                missing_text += f"• {col}: {count} missing values<br/>"
-            story.append(Paragraph(missing_text, styles['BodyText']))
+            
+            missing_items = list(metadata['missing_values'].items())[:10]
+            if missing_items:
+                missing_table_data = [['Column', 'Missing Count']]
+                for col, count in missing_items:
+                    missing_table_data.append([str(col), str(count)])
+                
+                missing_table = Table(missing_table_data, colWidths=[3.5 * inch, 2.5 * inch])
+                missing_table.setStyle(TableStyle([
+                    ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#667eea')),
+                    ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+                    ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+                    ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+                    ('FONTSIZE', (0, 0), (-1, 0), 12),
+                    ('FONTSIZE', (0, 1), (-1, -1), 10),
+                    ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
+                    ('TOPPADDING', (0, 1), (-1, -1), 8),
+                    ('BOTTOMPADDING', (0, 1), (-1, -1), 8),
+                    ('BACKGROUND', (0, 1), (-1, -1), colors.HexColor('#f8f9ff')),
+                    ('GRID', (0, 0), (-1, -1), 1, colors.HexColor('#e0e0e0')),
+                    ('VALIGN', (0, 0), (-1, -1), 'MIDDLE')
+                ]))
+                story.append(missing_table)
             story.append(Spacer(1, 20))
 
         story.append(PageBreak())
@@ -417,15 +412,32 @@ class ReportGenerator:
         if results:
             story.append(Paragraph("5. Machine Learning Results", heading_style))
 
-            ml_summary = f"""
-            <b>Task Type:</b> {results['task_type'].title()}<br/>
-            <b>Target Column:</b> {results['target_column']}<br/>
-            <b>Training Samples:</b> {results['train_size']:,}<br/>
-            <b>Test Samples:</b> {results['test_size']:,}<br/>
-            <b>Best Model:</b> {results['best_model']}<br/>
-            <b>Best Score:</b> {results['best_score']:.4f}
-            """
-            story.append(Paragraph(ml_summary, styles['BodyText']))
+            ml_summary_data = [
+                ['Metric', 'Value'],
+                ['Task Type', results['task_type'].title()],
+                ['Target Column', results['target_column']],
+                ['Training Samples', f"{results['train_size']:,}"],
+                ['Test Samples', f"{results['test_size']:,}"],
+                ['Best Model', results['best_model']],
+                ['Best Score', f"{results['best_score']:.4f}"]
+            ]
+            
+            ml_summary_table = Table(ml_summary_data, colWidths=[2.5 * inch, 3.5 * inch])
+            ml_summary_table.setStyle(TableStyle([
+                ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#667eea')),
+                ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+                ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+                ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+                ('FONTSIZE', (0, 0), (-1, 0), 12),
+                ('FONTSIZE', (0, 1), (-1, -1), 10),
+                ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
+                ('TOPPADDING', (0, 1), (-1, -1), 8),
+                ('BOTTOMPADDING', (0, 1), (-1, -1), 8),
+                ('BACKGROUND', (0, 1), (-1, -1), colors.HexColor('#f8f9ff')),
+                ('GRID', (0, 0), (-1, -1), 1, colors.HexColor('#e0e0e0')),
+                ('VALIGN', (0, 0), (-1, -1), 'MIDDLE')
+            ]))
+            story.append(ml_summary_table)
             story.append(Spacer(1, 20))
 
             if results.get('models'):
@@ -453,16 +465,21 @@ class ReportGenerator:
                             f"{metrics.get('cv_mean', 0):.4f}"
                         ])
 
-                metrics_table = Table(metrics_data)
+                col_width = 6.5 * inch / len(metrics_data[0])
+                metrics_table = Table(metrics_data, colWidths=[col_width] * len(metrics_data[0]))
                 metrics_table.setStyle(TableStyle([
-                    ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
+                    ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#667eea')),
                     ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
                     ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
                     ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
                     ('FONTSIZE', (0, 0), (-1, 0), 10),
+                    ('FONTSIZE', (0, 1), (-1, -1), 9),
                     ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
-                    ('BACKGROUND', (0, 1), (-1, -1), colors.beige),
-                    ('GRID', (0, 0), (-1, -1), 1, colors.black)
+                    ('TOPPADDING', (0, 1), (-1, -1), 8),
+                    ('BOTTOMPADDING', (0, 1), (-1, -1), 8),
+                    ('BACKGROUND', (0, 1), (-1, -1), colors.HexColor('#f8f9ff')),
+                    ('GRID', (0, 0), (-1, -1), 1, colors.HexColor('#e0e0e0')),
+                    ('VALIGN', (0, 0), (-1, -1), 'MIDDLE')
                 ]))
 
                 story.append(metrics_table)
@@ -495,7 +512,7 @@ class ReportGenerator:
             metrics are included in this report.
             """
 
-        story.append(Paragraph(conclusion, styles['BodyText']))
+        story.append(Paragraph(conclusion, body_style))
 
         doc.build(story)
 
@@ -514,10 +531,19 @@ class ReportGenerator:
         doc.add_heading('1. Executive Summary', 1)
 
         if results and 'ai_summary' in results:
-            summary_paragraphs = results['ai_summary'].split('\n\n')
+            summary_text = results['ai_summary']
+            summary_text = summary_text.replace('###', '').replace('##', '').replace('**', '')
+            summary_text = summary_text.replace('■', '').replace('▪', '').replace('•', '')
+            summary_text = summary_text.replace('\u2011', '-').replace('\xd7', 'x')
+            summary_text = summary_text.replace('\u2192', '->').replace('\xb2', '²')
+            
+            summary_paragraphs = summary_text.split('\n\n')
             for para in summary_paragraphs:
                 if para.strip():
-                    doc.add_paragraph(para.strip())
+                    clean_text = para.strip()
+                    clean_text = ' '.join(clean_text.split())
+                    if clean_text and not clean_text.startswith(('#', '-', '*', '.')):
+                        doc.add_paragraph(clean_text)
         else:
             doc.add_paragraph(
                 f"This report provides a comprehensive analysis of the dataset processed through DataPrepX. "

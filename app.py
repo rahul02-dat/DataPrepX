@@ -805,7 +805,7 @@ elif st.session_state.original_data is not None:
 st.divider()
 st.markdown("""
 <div style='text-align: center; color: #666; padding: 2rem;'>
-    <p>Built with ❤️ using Streamlit | DataPrepX v1.1 with AI Integration</p>
-    <p>©️ 2024 DataPrepX Team | AI-Powered ML Pipeline</p>
+    <p>DataPrepX v1.1 : Enhance With AI</p>
+    <p>©️ 2024 DataPrepX Team</p>
 </div>
 """, unsafe_allow_html=True)
