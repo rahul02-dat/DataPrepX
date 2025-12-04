@@ -171,7 +171,6 @@ with st.sidebar:
 
     # Advanced settings
     with st.expander("🔧 Advanced Settings"):
-        enable_tuning = st.checkbox("Enable Hyperparameter Tuning", False)
         enable_explain = st.checkbox("Generate Explainability Analysis", True)
         parallel_training = st.checkbox("Parallel Model Training", True)
 
@@ -368,7 +367,6 @@ elif st.session_state.original_data is not None:
                     # Update config with user selections
                     config['estimation']['test_size'] = test_size
                     config['estimation']['cv_folds'] = cv_folds
-                    config['estimation']['enable_hyperparameter_tuning'] = enable_tuning
                     config['estimation']['parallel_training'] = parallel_training
 
                     # Preprocessing
@@ -806,6 +804,6 @@ st.divider()
 st.markdown("""
 <div style='text-align: center; color: #666; padding: 2rem;'>
     <p>DataPrepX v1.1 : Enhance With AI</p>
-    <p>©️ 2024 DataPrepX Team</p>
+    <p>©️ 2025 DataPrepX Team</p>
 </div>
 """, unsafe_allow_html=True)
